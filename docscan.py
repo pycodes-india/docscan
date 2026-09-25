@@ -239,6 +239,19 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DocScan</title>
+    <script>
+    // 1. Right-click disable karein
+document.addEventListener('contextmenu', event => event.preventDefault());
+
+// 2. Keyboard shortcuts disable karein
+document.addEventListener('keydown', function(e) {
+    if (e.keyCode == 123) return false;
+    if (e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false;
+    if (e.ctrlKey && e.shiftKey && e.keyCode == 'C'.charCodeAt(0)) return false;
+    if (e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false;
+    if (e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false;
+});
+</script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         

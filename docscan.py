@@ -9,21 +9,8 @@ from PIL import Image, ImageOps
 # ==========================================
 # AI BACKGROUND REMOVAL (rembg / U^2-Net)
 # ==========================================
-try:
-    from rembg import remove as rembg_remove, new_session as rembg_new_session
-    REMBG_MODEL_NAME = "u2netp"  
-    try:
-        rembg_session = rembg_new_session(REMBG_MODEL_NAME)
-        REMBG_AVAILABLE = True
-        print(f"✅ AI background-removal model '{REMBG_MODEL_NAME}' loaded.")
-    except Exception as e:
-        print(f"⚠️  Could not load AI model '{REMBG_MODEL_NAME}' ({e}). Using classic edge detection instead.")
-        rembg_session = None
-        REMBG_AVAILABLE = False
-except ImportError:
-    print("⚠️  'rembg' not installed. Run: pip install rembg onnxruntime  ->  using classic edge detection instead.")
-    rembg_session = None
-    REMBG_AVAILABLE = False
+REMBG_AVAILABLE = False
+rembg_session = None
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 

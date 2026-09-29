@@ -240,18 +240,16 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DocScan</title>
     <script>
-    // 1. Right-click disable karein
-document.addEventListener('contextmenu', event => event.preventDefault());
-
-// 2. Keyboard shortcuts disable karein
-document.addEventListener('keydown', function(e) {
-    if (e.keyCode == 123) return false;
-    if (e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false;
-    if (e.ctrlKey && e.shiftKey && e.keyCode == 'C'.charCodeAt(0)) return false;
-    if (e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false;
-    if (e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false;
-});
-</script>
+    // Right-click & Keyboard shortcuts disable
+    document.addEventListener('contextmenu', event => event.preventDefault());
+    document.addEventListener('keydown', function(e) {
+        if (e.keyCode == 123) return false;
+        if (e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false;
+        if (e.ctrlKey && e.shiftKey && e.keyCode == 'C'.charCodeAt(0)) return false;
+        if (e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false;
+        if (e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false;
+    });
+    </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         
@@ -268,7 +266,6 @@ document.addEventListener('keydown', function(e) {
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); }
         body { background-color: var(--bg); color: var(--dark); min-height: 100vh; display: flex; flex-direction: column; }
         
-        /* Header */
         header { 
             background: linear-gradient(135deg, var(--primary), var(--secondary)); 
             color: white; padding: 1.2rem 2.5rem; 
@@ -278,11 +275,9 @@ document.addEventListener('keydown', function(e) {
         }
         .logo { font-size: 1.5rem; font-weight: 700; display: flex; align-items: center; gap: 0.75rem; letter-spacing: -0.5px;}
         
-        /* Layout */
         .main-container { display: flex; flex: 1; overflow: hidden; flex-direction: column; }
         @media (min-width: 768px) { .main-container { flex-direction: row; } }
         
-        /* Sidebar */
         .sidebar { background: white; width: 100%; border-bottom: 1px solid var(--gray-light); padding: 2rem; overflow-y: auto; box-shadow: var(--shadow-sm); z-index: 10;}
         @media (min-width: 768px) { .sidebar { width: 340px; border-right: 1px solid var(--gray-light); border-bottom: none; height: calc(100vh - 70px); } }
         
@@ -296,7 +291,6 @@ document.addEventListener('keydown', function(e) {
         }
         select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(37,99,235,0.15); }
         
-        /* Buttons */
         .btn { 
             background: white; border: 1px solid #CBD5E1; cursor: pointer; 
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
@@ -306,11 +300,9 @@ document.addEventListener('keydown', function(e) {
         }
         .btn:hover { background: #F1F5F9; transform: translateY(-1px); box-shadow: var(--shadow-sm); }
         .btn-primary { background: var(--primary); color: white; border: none; }
-        .btn-primary:hover { background: var(--secondary); }
         .btn-success { background: var(--success); color: white; border: none; }
         .btn-success:hover { background: #059669; }
         
-        /* Global Print All Button (Redesigned) */
         #printAllBtn { 
             display: none; width: 100%; margin-top: 2rem; padding: 1.25rem; 
             font-size: 1.15rem; font-weight: 700; border-radius: 12px; 
@@ -320,14 +312,12 @@ document.addEventListener('keydown', function(e) {
         }
         #printAllBtn:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(16, 185, 129, 0.5); }
 
-        /* Workspace */
         .workspace { flex: 1; padding: 2.5rem; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 2rem; position: relative; background: #F1F5F9;}
         
         .empty-state { text-align: center; color: var(--gray-text); margin-top: 10vh; max-width: 400px; }
         .empty-state h2 { color: var(--dark); margin-bottom: 1rem; font-size: 1.8rem; }
         .empty-state svg { width: 90px; height: 90px; margin-bottom: 1.5rem; color: var(--primary); opacity: 0.9; }
         
-        /* Upload Zones */
         .upload-zones { display: flex; flex-direction: column; gap: 2.5rem; width: 100%; max-width: 900px; }
         
         .upload-card { 
@@ -341,7 +331,6 @@ document.addEventListener('keydown', function(e) {
         .upload-card input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 10; }
         .upload-card .icon { font-size: 3.5rem; margin-bottom: 1rem; color: var(--primary); }
         
-        /* Result Preview Cards */
         .result-card { 
             background: white; border-radius: 16px; 
             box-shadow: var(--shadow-lg); overflow: hidden; 
@@ -358,7 +347,6 @@ document.addEventListener('keydown', function(e) {
         .result-actions { padding: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; background: #F8FAFC;}
         .result-actions .full-width { grid-column: span 2; }
 
-        /* Loaders & Modals */
         .loader-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.7); display: none; justify-content: center; align-items: center; z-index: 100; backdrop-filter: blur(5px); }
         .loader-box { background: white; padding: 2.5rem; border-radius: 16px; text-align: center; box-shadow: var(--shadow-lg); }
         .spinner { border: 4px solid #E2E8F0; border-top: 4px solid var(--primary); border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto 1.5rem auto; }
@@ -370,56 +358,42 @@ document.addEventListener('keydown', function(e) {
         canvas { max-width: 100%; max-height: 100%; box-shadow: 0 0 30px rgba(0,0,0,0.8); touch-action: none; border-radius: 8px;}
         .editor-footer { padding: 1.5rem; background: #0F172A; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; border-top: 1px solid #334155;}
 
-       /* -------------------------------------
-           FIXED PRINT STYLES (No Blank Pages)
-           ------------------------------------- */
         @media print {
             html, body { 
                 background-color: #ffffff !important; 
                 background: none !important; 
-                min-height: 0 !important; /* 100vh वाले एक्स्ट्रा स्पेस को हटाएगा */
+                min-height: 0 !important; 
                 margin: 0; padding: 0;
             }
-            
-            /* बाकी सारे UI एलिमेंट्स को पूरी तरह गायब कर दें ताकि वो जगह ना लें */
             header, .main-container, .loader-overlay, .editor-modal { 
                 display: none !important; 
             }
-            
             #print-area, #print-area * { visibility: visible; }
-            
             #print-area { 
-                position: relative; /* Absolute की जगह relative कर दिया है */
+                position: relative; 
                 left: 0; top: 0; width: 100%; 
                 display: flex; flex-direction: column; align-items: center; 
                 justify-content: flex-start; 
-                padding-top: 1cm; /* स्पेस थोड़ा कम कर दिया है */
+                padding-top: 1cm; 
             }
-            
             .print-page { 
                 width: 100%; display: flex; flex-direction: column; align-items: center; 
-                gap: 4cm; /* ID Cards के बीच का गैप थोड़ा कम किया है ताकि दूसरे पेज पर न जाए */
+                gap: 4cm; 
             }
-            
-            /* Multi / ID Cards */
             .print-page img { 
                 width: 12cm; height: 7.5cm; object-fit: fill; border: 1px solid #ddd; 
             }
-            
-            /* Single Document (Marksheet/Certificate) */
             .single-print { gap: 0; }
             .single-print img { 
                 width: 19cm !important; 
                 height: auto !important; 
-                max-height: 25cm !important; /* मैक्स-हाइट कम की है ताकि पेज से बाहर न निकले */
+                max-height: 25cm !important; 
                 object-fit: contain !important; 
                 border: none !important; 
             }
-            
-            /* A4 साइज सेट करें और ब्राउज़र के डिफ़ॉल्ट मार्जिन को फिक्स करें */
             @page {
                 size: A4 portrait;
-                margin: 0.5cm 1cm; /* ऊपर-नीचे 0.5cm और अगल-बगल 1cm का मार्जिन */
+                margin: 0.5cm 1cm; 
             }
         }
     </style>
@@ -451,9 +425,6 @@ document.addEventListener('keydown', function(e) {
                 <label>Document Type</label>
                 <select id="docType"></select>
             </div>
-            
-            <div style="margin-top: 3rem; text-align: center;">
-               </div>
         </div>
 
         <!-- Workspace -->
@@ -462,7 +433,7 @@ document.addEventListener('keydown', function(e) {
             <div class="empty-state" id="emptyState">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
                 <h2>Ready to Scan</h2>
-                <p>Select your document type on the left and upload your image to get started.</p>
+                <p>Select your document type. Upload, Drag & Drop, or <b>Paste (Ctrl+V)</b> your image.</p>
             </div>
 
             <!-- Upload Zones -->
@@ -474,9 +445,9 @@ document.addEventListener('keydown', function(e) {
                         <h3 id="frontTitle" style="text-align: center; color: #475569; font-weight: 700;">DOCUMENT IMAGE</h3>
                         
                         <div class="upload-card" id="frontUpload">
-                            <input type="file" accept="image/*" capture="environment" onchange="handleFileUpload(event, 'front')">
-                            <div class="icon"></div>
-                            <h3 style="color: var(--dark); font-size: 1.25rem;">Drag & Drop here</h3>
+                            <input type="file" accept="image/*" capture="environment" onchange="handleFileInput(event, 'front')">
+                            <div class="icon">📄</div>
+                            <h3 style="color: var(--dark); font-size: 1.25rem;">Drag, Drop or Paste here</h3>
                             <p style="color: var(--gray-text); margin-top: 0.5rem;">or click to browse your files</p>
                         </div>
 
@@ -509,9 +480,9 @@ document.addEventListener('keydown', function(e) {
                         <h3 style="text-align: center; color: #475569; font-weight: 700;">BACK SIDE</h3>
                         
                         <div class="upload-card" id="backUpload">
-                            <input type="file" accept="image/*" capture="environment" onchange="handleFileUpload(event, 'back')">
-                           
-                            <h3 style="color: var(--dark); font-size: 1.25rem;">Drag & Drop here</h3>
+                            <input type="file" accept="image/*" capture="environment" onchange="handleFileInput(event, 'back')">
+                            <div class="icon">📄</div>
+                            <h3 style="color: var(--dark); font-size: 1.25rem;">Drag, Drop or Paste here</h3>
                             <p style="color: var(--gray-text); margin-top: 0.5rem;">or click to browse your files</p>
                         </div>
 
@@ -612,7 +583,6 @@ document.addEventListener('keydown', function(e) {
 
         handleCategoryChange();
 
-        // UPDATED PRINT BUTTON LOGIC
         function checkPrintAll() {
             const cat = document.getElementById('docCategory').value;
             const printBtn = document.getElementById('printAllBtn');
@@ -634,8 +604,8 @@ document.addEventListener('keydown', function(e) {
         }
         function hideLoader() { document.getElementById('loader').style.display = 'none'; }
 
-        async function handleFileUpload(event, side) {
-            const file = event.target.files[0];
+        // --- NEW: Upload Logic separated so Paste can also use it ---
+        async function processFile(file, side) {
             if (!file) return;
 
             showLoader("Loading Image...");
@@ -671,8 +641,46 @@ document.addEventListener('keydown', function(e) {
                 alert("Upload failed.");
                 hideLoader();
             }
+        }
+
+        // --- Handler for click/drag-drop input ---
+        function handleFileInput(event, side) {
+            const file = event.target.files[0];
+            processFile(file, side);
             event.target.value = ''; 
         }
+
+        // --- NEW: Global Paste Event Listener ---
+        document.addEventListener('paste', function(e) {
+            const clipboardItems = (e.clipboardData || e.originalEvent.clipboardData).items;
+            let imageFile = null;
+
+            for (let i = 0; i < clipboardItems.length; i++) {
+                if (clipboardItems[i].type.indexOf('image') !== -1) {
+                    imageFile = clipboardItems[i].getAsFile();
+                    break;
+                }
+            }
+
+            if (imageFile) {
+                const cat = document.getElementById('docCategory').value;
+                const isFrontFilled = state.front.originalBase64 !== null;
+                const isBackFilled = state.back.originalBase64 !== null;
+
+                if (!isFrontFilled) {
+                    // Paste to Front if empty
+                    processFile(imageFile, 'front');
+                } else if (cat === 'multi' && !isBackFilled) {
+                    // Paste to Back if Front is full & Back is empty
+                    processFile(imageFile, 'back');
+                } else {
+                    // Both slots are filled (or single mode filled) - Ask user
+                    if(confirm("An image is already uploaded. Do you want to replace the FRONT image?")) {
+                        processFile(imageFile, 'front');
+                    }
+                }
+            }
+        });
 
         async function performCrop(side) {
             showLoader("Cropping...");
@@ -734,7 +742,6 @@ document.addEventListener('keydown', function(e) {
             hideLoader();
         }
 
-        // UPDATED PRINT FUNCTION FOR SINGLE AND MULTI
         function printAll() {
             const cat = document.getElementById('docCategory').value;
             const printArea = document.getElementById('print-area');
@@ -877,10 +884,6 @@ document.addEventListener('keydown', function(e) {
         canvas.addEventListener('touchstart', handlePointerDown, {passive: false});
         canvas.addEventListener('touchmove', handlePointerMove, {passive: false});
         window.addEventListener('touchend', handlePointerUp);
-
-        window.addEventListener('resize', () => {
-            if (document.getElementById('editorModal').style.display === 'flex') { initCanvas(); }
-        });
 
         ['front', 'back'].forEach(side => {
             const el = document.getElementById(side + 'Upload');

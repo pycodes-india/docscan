@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cashfree Subdomain Payment Test</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Cashfree v3 JS SDK -->
+    <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+</head>
+<body class="bg-slate-100 flex items-center justify-center h-screen">
+
+    <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+        <h1 class="text-2xl font-bold text-slate-800 mb-2">Cashfree Gateway Test</h1>
+        <p class="text-slate-500 text-sm mb-6">Subdomain par payment gateway check karne ke liye niche button dabayein.</p>
+
+        <!-- Credentials Input (Sirf testing ke liye) -->
+        <div class="mb-4 text-left">
+            <label class="block text-xs font-semibold text-slate-600 mb-1">App ID:</label>
+            <input type="text" id="appId" placeholder="Apni Cashfree App ID yahan daalein" class="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+        </div>
+        <div class="mb-6 text-left">
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Secret Key:</label>
+            <input type="password" id="secretKey" placeholder="Apni Cashfree Secret Key yahan daalein" class="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+        </div>
+
+        <button onclick="startTestPayment()" id="payBtn" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 rounded-xl transition duration-200">
+            ₹1 Test Payment Karein
+        </button>
+
+        <p id="statusMsg" class="mt-4 text-xs text-slate-500"></p>
+    </div>
+
+    <script>
+        async function startTestPayment() {
+            const appId = document.getElementById('appId').value.trim();
+            const secretKey = document.getElementById('secretKey').value.trim();
+            const statusMsg = document.getElementById('statusMsg');
+            const payBtn = document.getElementById('payBtn');
+
+            if (!appId || !secretKey) {
+                alert("Kripya App ID aur Secret Key dono bharein!");
+                return;
+            }
+
+            payBtn.disabled = true;
+            payBtn.innerText = "Order Create ho raha hai...";
+            statusMsg.innerText = "Connecting to Cashfree Live API...";
+
+            // Unique Order ID generate karne ke liye
+            const orderId = "TEST_ORDER_" + Date.now();
+
+            const orderData = {
+                order_id: orderId,
+                order_amount: 1.00, // ₹1 ka test payment
+                order_currency: "INR",
+                customer_details: {
+                    customer_id: "test_customer_123",
+                    customer_phone: "9999999999",
+                    customer_email: "test@example.com"
+                },
+                order_meta: {
+                    return_url: window.location.href // Payment ke baad isi page par wapas aayega
+                }
+            };
+
+            try {
+                // Cashfree Live API ko direct request bhej rahe hain
+                const response = await fetch("https://api.cashfree.com/pg/orders", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-client-id": appId,
+                        "x-client-secret": secretKey,
+                        "x-api-version": "2022-09-01"
+                    },
+                    body: JSON.stringify(orderData)
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.payment_session_id) {
+                    statusMsg.innerText = "Order ban gaya! Checkout khul raha hai...";
+                    
+                    // Cashfree SDK initialize karein (Production mode)
+                    const cashfree = Cashfree({
+                        mode: "production"
+                    });
+
+                    let checkoutOptions = {
+                        paymentSessionId: data.payment_session_id,
+                        redirectTarget: "_self"
+                    };
+
+                    cashfree.checkout(checkoutOptions);
+
+                } else {
+                    console.error("Cashfree Error:", data);
+                    statusMsg.innerText = "Error: " + (data.message || "Order create nahi ho paya.");
+                    payBtn.disabled = false;
+                    payBtn.innerText = "₹1 Test Payment Karein";
+                }
+
+            } catch (error) {
+                console.error("Network Error:", error);
+                statusMsg.innerText = "Network Error! CORS ya internet connection check karein.";
+                payBtn.disabled = false;
+                payBtn.innerText = "₹1 Test Payment Karein";
+            }
+        }
+    </script>
+</body>
+</html>

@@ -7,18 +7,28 @@ from flask import Flask, request, jsonify
 from PIL import Image, ImageOps
 
 # ==========================================
-# AI BACKGROUND REMOVAL (rembg / U^2-Net)
-# Install: pip install rembg onnxruntime
+# AI BACKGROUND REMOVAL (Lazy Loaded)
 # ==========================================
 REMBG_AVAILABLE = False
 rembg_session = None
-REMBG_MODEL_NAME = "u2net"
+
 try:
     from rembg import remove as rembg_remove, new_session
-    rembg_session = new_session(REMBG_MODEL_NAME)
     REMBG_AVAILABLE = True
 except Exception as e:
-    print(f"rembg not available: {e}")
+    print(f"rembg import error: {e}")
+
+def get_rembg_session():
+    """Server start par model load nahi hoga; pehli image request aane par hoga."""
+    global rembg_session
+    if rembg_session is None and REMBG_AVAILABLE:
+        try:
+            # u2netp lightweight model (~4.7 MB) hai, standard u2net (~176 MB)
+            # Render ke 512MB RAM free tier ke liye u2netp best hai taaki OOM na ho.
+            rembg_session = new_session("u2netp")
+        except Exception as e:
+            print(f"Failed to initialize rembg session: {e}")
+    return rembg_session
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -59,32 +69,30 @@ def four_point_transform(image, pts):
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
-
 def _quad_from_contour(cnt):
-    """Contour se 4 corner points (perspective-aware) nikaalo."""
     hull = cv2.convexHull(cnt)
     peri = cv2.arcLength(hull, True)
     for eps in np.linspace(0.01, 0.10, 25):
         approx = cv2.approxPolyDP(hull, eps * peri, True)
         if len(approx) == 4:
             return approx.reshape(4, 2).astype("float32")
-    # fallback: tilted rectangle
     return cv2.boxPoints(cv2.minAreaRect(hull)).astype("float32")
-
 
 def _quad_is_valid(quad, w, h):
     area = cv2.contourArea(quad.astype("float32"))
     frac = area / float(w * h)
     if frac < 0.08 or frac > 0.97:
         return False
-    # convex hona chahiye
     return cv2.isContourConvex(quad.reshape(-1, 1, 2).astype("int32"))
-
 
 def detect_corners_ai(image):
     if not REMBG_AVAILABLE:
         return None
     try:
+        session = get_rembg_session()
+        if session is None:
+            return None
+
         orig_h, orig_w = image.shape[:2]
         scale = 600.0 / max(orig_h, orig_w)
         if scale < 1:
@@ -94,7 +102,7 @@ def detect_corners_ai(image):
             scale = 1.0
 
         rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        result = rembg_remove(Image.fromarray(rgb), session=rembg_session)
+        result = rembg_remove(Image.fromarray(rgb), session=session)
         mask = np.array(result)[:, :, 3]
 
         _, binm = cv2.threshold(mask, 100, 255, cv2.THRESH_BINARY)
@@ -112,10 +120,8 @@ def detect_corners_ai(image):
         if cv2.contourArea(largest) < (sw * sh * 0.05):
             return None
 
-        # perspective-aware 4 corners (sirf tilted rectangle nahi)
         quad = _quad_from_contour(largest)
 
-        # thoda sa bahar ki taraf pad karo
         center = quad.mean(axis=0)
         pad = k * 0.3
         padded = []
@@ -127,7 +133,6 @@ def detect_corners_ai(image):
         padded[:, 0] = np.clip(padded[:, 0], 0, sw - 1)
         padded[:, 1] = np.clip(padded[:, 1], 0, sh - 1)
 
-        # galat mask (poori image / bahut chhota) ho to classic par fallback
         if not _quad_is_valid(padded, sw, sh):
             return None
 
@@ -136,9 +141,8 @@ def detect_corners_ai(image):
         pts[:, 1] = np.clip(pts[:, 1], 0, orig_h - 1)
         return pts.tolist()
     except Exception as e:
-        print(f"AI corner detection failed, using classic fallback: {e}")
+        print(f"AI corner detection fallback: {e}")
         return None
-
 
 def detect_corners(image):
     oh, ow = image.shape[:2]
@@ -153,15 +157,11 @@ def detect_corners(image):
     hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
 
     masks = []
-    # 1) Otsu brightness (safed document vs dark background)
     _, m1 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     masks.append(m1)
-    # 2) Low saturation + high value (white paper)
     masks.append(cv2.inRange(hsv, (0, 0, 120), (180, 70, 255)))
-    # 3) Adaptive: bright regions relative to local area
     masks.append(cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                        cv2.THRESH_BINARY, 101, -15))
-    # 4) Canny edges (purana tareeka, last resort)
     edges = cv2.Canny(gray, 30, 150)
     masks.append(cv2.morphologyEx(edges, cv2.MORPH_CLOSE,
                                   cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))))
@@ -180,7 +180,6 @@ def detect_corners(image):
             quad = _quad_from_contour(c)
             if not _quad_is_valid(quad, sw, sh):
                 continue
-            # score: quad area, aur contour quad ko kitna achhe se fill karta hai
             q_area = cv2.contourArea(quad)
             fill = cv2.contourArea(c) / (q_area + 1e-6)
             score = q_area * min(fill, 1.0)
@@ -195,13 +194,14 @@ def detect_corners(image):
     pts[:, 1] = np.clip(pts[:, 1], 0, oh - 1)
     return pts.tolist()
 
-
 def auto_orient(image, category):
     h, w = image.shape[:2]
     if category == 'multi':
-        if h > w: image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        if h > w:
+            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     elif category == 'single':
-        if w > h: image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        if w > h:
+            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     return image
 
 def process_enhancement(image, mode):
@@ -280,15 +280,18 @@ def api_rotate():
     try:
         data = request.json
         img, header = base64_to_cv2(data['image'])
-        if data['direction'] == 'cw': rotated = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-        elif data['direction'] == 'ccw': rotated = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        else: rotated = img
+        if data['direction'] == 'cw':
+            rotated = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        elif data['direction'] == 'ccw':
+            rotated = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            rotated = img
         return jsonify({"success": True, "result_b64": cv2_to_base64(rotated, header)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 # ==========================================
-# FRONTEND HTML/CSS/JS (PROFESSIONAL UI)
+# FRONTEND HTML/CSS/JS
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -298,7 +301,6 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DocScan</title>
     <script>
-    // Right-click & Keyboard shortcuts disable
     document.addEventListener('contextmenu', event => event.preventDefault());
     document.addEventListener('keydown', function(e) {
         if (e.keyCode == 123) return false;
@@ -469,7 +471,6 @@ HTML_TEMPLATE = """
     </header>
 
     <div class="main-container">
-        <!-- Sidebar -->
         <div class="sidebar">
             <div class="form-group">
                 <label>Document Category</label>
@@ -485,16 +486,13 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Workspace -->
         <div class="workspace">
-
             <div class="empty-state" id="emptyState">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
                 <h2>Ready to Scan</h2>
                 <p>Select your document type. Upload, Drag & Drop, or <b>Paste (Ctrl+V)</b> your image.</p>
             </div>
 
-            <!-- Upload Zones -->
             <div class="upload-zones" id="uploadZones" style="display: none;">
                 <div style="display: flex; gap: 2rem; flex-wrap: wrap; width: 100%; justify-content: center;">
 
@@ -569,7 +567,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- Print All Button Container -->
                 <div style="display: flex; justify-content: center; width: 100%;">
                     <button id="printAllBtn" onclick="printAll()">PRINT DOCUMENT</button>
                 </div>
@@ -586,7 +583,6 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Canvas Editor Modal -->
     <div class="editor-modal" id="editorModal">
         <div class="editor-header">
             <h3 style="font-weight: 600;">Manual Corner Adjustment</h3>
@@ -662,7 +658,6 @@ HTML_TEMPLATE = """
         }
         function hideLoader() { document.getElementById('loader').style.display = 'none'; }
 
-        // --- Upload Logic separated so Paste can also use it ---
         async function processFile(file, side) {
             if (!file) return;
 
@@ -701,14 +696,12 @@ HTML_TEMPLATE = """
             }
         }
 
-        // --- Handler for click/drag-drop input ---
         function handleFileInput(event, side) {
             const file = event.target.files[0];
             processFile(file, side);
             event.target.value = '';
         }
 
-        // --- Global Paste Event Listener ---
         document.addEventListener('paste', function(e) {
             const clipboardItems = (e.clipboardData || e.originalEvent.clipboardData).items;
             let imageFile = null;
@@ -956,13 +949,7 @@ def index():
     return HTML_TEMPLATE
 
 if __name__ == '__main__':
-    print("\n" + "="*50)
-    print("DOCSCAN IS RUNNING")
-    if REMBG_AVAILABLE:
-        print(f"AI auto-crop ENABLED (model: {REMBG_MODEL_NAME})")
-    else:
-        print("AI auto-crop NOT available — using classic edge detection only.")
-        print("   Install for much better results: pip install rembg onnxruntime")
-    print("Open your browser and navigate to: http://127.0.0.1:5000")
-    print("="*50 + "\n")
-    app.run(host='127.0.0.1', port=5000, debug=False)
+    # Local development ke waqt standard 5000 par run hoga
+    # Render environment variable PORT provide karta hai
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

@@ -8,12 +8,20 @@ from PIL import Image, ImageOps
 
 # ==========================================
 # AI BACKGROUND REMOVAL (rembg / U^2-Net)
+# Install: pip install rembg onnxruntime
 # ==========================================
 REMBG_AVAILABLE = False
 rembg_session = None
+REMBG_MODEL_NAME = "u2net"
+try:
+    from rembg import remove as rembg_remove, new_session
+    rembg_session = new_session(REMBG_MODEL_NAME)
+    REMBG_AVAILABLE = True
+except Exception as e:
+    print(f"rembg not available: {e}")
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 # ==========================================
 # OPENCV DOCUMENT PROCESSING FUNCTIONS
@@ -51,6 +59,28 @@ def four_point_transform(image, pts):
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
+
+def _quad_from_contour(cnt):
+    """Contour se 4 corner points (perspective-aware) nikaalo."""
+    hull = cv2.convexHull(cnt)
+    peri = cv2.arcLength(hull, True)
+    for eps in np.linspace(0.01, 0.10, 25):
+        approx = cv2.approxPolyDP(hull, eps * peri, True)
+        if len(approx) == 4:
+            return approx.reshape(4, 2).astype("float32")
+    # fallback: tilted rectangle
+    return cv2.boxPoints(cv2.minAreaRect(hull)).astype("float32")
+
+
+def _quad_is_valid(quad, w, h):
+    area = cv2.contourArea(quad.astype("float32"))
+    frac = area / float(w * h)
+    if frac < 0.08 or frac > 0.97:
+        return False
+    # convex hona chahiye
+    return cv2.isContourConvex(quad.reshape(-1, 1, 2).astype("int32"))
+
+
 def detect_corners_ai(image):
     if not REMBG_AVAILABLE:
         return None
@@ -65,7 +95,7 @@ def detect_corners_ai(image):
 
         rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
         result = rembg_remove(Image.fromarray(rgb), session=rembg_session)
-        mask = np.array(result)[:, :, 3] 
+        mask = np.array(result)[:, :, 3]
 
         _, binm = cv2.threshold(mask, 100, 255, cv2.THRESH_BINARY)
         sh, sw = small.shape[:2]
@@ -82,18 +112,26 @@ def detect_corners_ai(image):
         if cv2.contourArea(largest) < (sw * sh * 0.05):
             return None
 
-        rect = cv2.minAreaRect(largest)
-        box = cv2.boxPoints(rect)
+        # perspective-aware 4 corners (sirf tilted rectangle nahi)
+        quad = _quad_from_contour(largest)
 
-        cx, cy = rect[0]
-        pad = k * 0.6
+        # thoda sa bahar ki taraf pad karo
+        center = quad.mean(axis=0)
+        pad = k * 0.3
         padded = []
-        for (x, y) in box:
-            dx, dy = x - cx, y - cy
+        for (x, y) in quad:
+            dx, dy = x - center[0], y - center[1]
             dist = np.hypot(dx, dy) or 1
             padded.append([x + dx / dist * pad, y + dy / dist * pad])
+        padded = np.array(padded, dtype="float32")
+        padded[:, 0] = np.clip(padded[:, 0], 0, sw - 1)
+        padded[:, 1] = np.clip(padded[:, 1], 0, sh - 1)
 
-        pts = np.array(padded, dtype="float32") / scale 
+        # galat mask (poori image / bahut chhota) ho to classic par fallback
+        if not _quad_is_valid(padded, sw, sh):
+            return None
+
+        pts = padded / scale
         pts[:, 0] = np.clip(pts[:, 0], 0, orig_w - 1)
         pts[:, 1] = np.clip(pts[:, 1], 0, orig_h - 1)
         return pts.tolist()
@@ -101,55 +139,75 @@ def detect_corners_ai(image):
         print(f"AI corner detection failed, using classic fallback: {e}")
         return None
 
+
 def detect_corners(image):
-    original_height, original_width = image.shape[:2]
-    ratio = original_height / 500.0
-    dim = (int(original_width / ratio), 500)
-    resized = cv2.resize(image, dim)
+    oh, ow = image.shape[:2]
+    scale = 800.0 / max(oh, ow)
+    small = cv2.resize(image, (int(ow * scale), int(oh * scale))) if scale < 1 else image.copy()
+    if scale >= 1:
+        scale = 1.0
+    sh, sw = small.shape[:2]
 
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bilateralFilter(gray, 11, 17, 17)
-    edged = cv2.Canny(gray, 30, 200)
+    blur = cv2.GaussianBlur(small, (7, 7), 0)
+    gray = cv2.cvtColor(blur, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    edged = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
+    masks = []
+    # 1) Otsu brightness (safed document vs dark background)
+    _, m1 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    masks.append(m1)
+    # 2) Low saturation + high value (white paper)
+    masks.append(cv2.inRange(hsv, (0, 0, 120), (180, 70, 255)))
+    # 3) Adaptive: bright regions relative to local area
+    masks.append(cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       cv2.THRESH_BINARY, 101, -15))
+    # 4) Canny edges (purana tareeka, last resort)
+    edges = cv2.Canny(gray, 30, 150)
+    masks.append(cv2.morphologyEx(edges, cv2.MORPH_CLOSE,
+                                  cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))))
 
-    contours, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+    k = max(7, int(min(sh, sw) * 0.03)) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
 
-    screenCnt = None
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4 and cv2.contourArea(approx) > (resized.shape[0] * resized.shape[1] * 0.1):
-            screenCnt = approx
-            break
+    best, best_score = None, 0
+    for m in masks:
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel, iterations=2)
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        for c in sorted(contours, key=cv2.contourArea, reverse=True)[:3]:
+            quad = _quad_from_contour(c)
+            if not _quad_is_valid(quad, sw, sh):
+                continue
+            # score: quad area, aur contour quad ko kitna achhe se fill karta hai
+            q_area = cv2.contourArea(quad)
+            fill = cv2.contourArea(c) / (q_area + 1e-6)
+            score = q_area * min(fill, 1.0)
+            if score > best_score:
+                best, best_score = quad, score
 
-    if screenCnt is None:
-        if contours:
-            largest = contours[0]
-            if cv2.contourArea(largest) > (resized.shape[0] * resized.shape[1] * 0.05):
-                rect = cv2.minAreaRect(largest)
-                box = cv2.boxPoints(rect) * ratio
-                return box.tolist()
+    if best is None:
+        return [[0, 0], [ow, 0], [ow, oh], [0, oh]]
 
-        return [[0, 0], [original_width, 0], [original_width, original_height], [0, original_height]]
-
-    pts = screenCnt.reshape(4, 2) * ratio
+    pts = best / scale
+    pts[:, 0] = np.clip(pts[:, 0], 0, ow - 1)
+    pts[:, 1] = np.clip(pts[:, 1], 0, oh - 1)
     return pts.tolist()
+
 
 def auto_orient(image, category):
     h, w = image.shape[:2]
-    if category == 'multi': 
+    if category == 'multi':
         if h > w: image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    elif category == 'single': 
+    elif category == 'single':
         if w > h: image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     return image
 
 def process_enhancement(image, mode):
     if mode == 'clean':
         alpha = 1.1
-        beta = 10  
+        beta = 10
         return cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
     elif mode == 'bw':
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -180,23 +238,23 @@ def api_upload():
     try:
         if 'image' not in request.files:
             return jsonify({"success": False, "error": "No image file provided."})
-        
+
         file = request.files['image']
         img_bytes = file.read()
-        
+
         pil_img = Image.open(io.BytesIO(img_bytes))
-        pil_img = ImageOps.exif_transpose(pil_img)
+        pil_img = ImageOps.exif_transpose(pil_img).convert("RGB")
         cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        
+
         corners = detect_corners_ai(cv_img)
         detection_method = "ai"
         if corners is None:
             corners = detect_corners(cv_img)
             detection_method = "classic"
-        
+
         original_b64 = cv2_to_base64(cv_img)
         height, width = cv_img.shape[:2]
-        
+
         return jsonify({
             "success": True, "original_b64": original_b64, "width": width, "height": height,
             "corners": corners, "detection_method": detection_method
@@ -252,7 +310,7 @@ HTML_TEMPLATE = """
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        
+
         :root {
             --primary: #2563EB; --secondary: #4F46E5; --dark: #0F172A;
             --bg: #F8FAFC; --success: #10B981; --danger: #EF4444;
@@ -262,50 +320,50 @@ HTML_TEMPLATE = """
             --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
             --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
         }
-        
+
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); }
         body { background-color: var(--bg); color: var(--dark); min-height: 100vh; display: flex; flex-direction: column; }
-        
-        header { 
-            background: linear-gradient(135deg, var(--primary), var(--secondary)); 
-            color: white; padding: 1.2rem 2.5rem; 
-            box-shadow: var(--shadow-md); 
-            display: flex; justify-content: space-between; align-items: center; 
+
+        header {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white; padding: 1.2rem 2.5rem;
+            box-shadow: var(--shadow-md);
+            display: flex; justify-content: space-between; align-items: center;
             position: sticky; top: 0; z-index: 50;
         }
         .logo { font-size: 1.5rem; font-weight: 700; display: flex; align-items: center; gap: 0.75rem; letter-spacing: -0.5px;}
-        
+
         .main-container { display: flex; flex: 1; overflow: hidden; flex-direction: column; }
         @media (min-width: 768px) { .main-container { flex-direction: row; } }
-        
+
         .sidebar { background: white; width: 100%; border-bottom: 1px solid var(--gray-light); padding: 2rem; overflow-y: auto; box-shadow: var(--shadow-sm); z-index: 10;}
         @media (min-width: 768px) { .sidebar { width: 340px; border-right: 1px solid var(--gray-light); border-bottom: none; height: calc(100vh - 70px); } }
-        
+
         .form-group { margin-bottom: 1.5rem; }
         label { display: block; font-weight: 600; margin-bottom: 0.5rem; color: #334155; font-size: 0.95rem;}
-        select { 
-            width: 100%; padding: 0.85rem 1rem; border-radius: 10px; 
-            border: 1px solid #CBD5E1; font-size: 1rem; 
+        select {
+            width: 100%; padding: 0.85rem 1rem; border-radius: 10px;
+            border: 1px solid #CBD5E1; font-size: 1rem;
             outline: none; transition: all 0.2s; background: #fff;
             box-shadow: var(--shadow-sm); cursor: pointer;
         }
         select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(37,99,235,0.15); }
-        
-        .btn { 
-            background: white; border: 1px solid #CBD5E1; cursor: pointer; 
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
-            font-weight: 600; display: inline-flex; align-items: center; 
-            justify-content: center; gap: 0.5rem; color: #334155; 
+
+        .btn {
+            background: white; border: 1px solid #CBD5E1; cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            font-weight: 600; display: inline-flex; align-items: center;
+            justify-content: center; gap: 0.5rem; color: #334155;
             padding: 0.75rem 1rem; border-radius: 10px; font-size: 0.95rem;
         }
         .btn:hover { background: #F1F5F9; transform: translateY(-1px); box-shadow: var(--shadow-sm); }
         .btn-primary { background: var(--primary); color: white; border: none; }
         .btn-success { background: var(--success); color: white; border: none; }
         .btn-success:hover { background: #059669; }
-        
-        #printAllBtn { 
-            display: none; width: 100%; margin-top: 2rem; padding: 1.25rem; 
-            font-size: 1.15rem; font-weight: 700; border-radius: 12px; 
+
+        #printAllBtn {
+            display: none; width: 100%; margin-top: 2rem; padding: 1.25rem;
+            font-size: 1.15rem; font-weight: 700; border-radius: 12px;
             background: linear-gradient(135deg, #10B981, #059669);
             color: white; border: none; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
             transition: transform 0.2s, box-shadow 0.2s;
@@ -313,37 +371,37 @@ HTML_TEMPLATE = """
         #printAllBtn:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(16, 185, 129, 0.5); }
 
         .workspace { flex: 1; padding: 2.5rem; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 2rem; position: relative; background: #F1F5F9;}
-        
+
         .empty-state { text-align: center; color: var(--gray-text); margin-top: 10vh; max-width: 400px; }
         .empty-state h2 { color: var(--dark); margin-bottom: 1rem; font-size: 1.8rem; }
         .empty-state svg { width: 90px; height: 90px; margin-bottom: 1.5rem; color: var(--primary); opacity: 0.9; }
-        
+
         .upload-zones { display: flex; flex-direction: column; gap: 2.5rem; width: 100%; max-width: 900px; }
-        
-        .upload-card { 
-            background: white; border: 2px dashed #94A3B8; border-radius: 16px; 
-            padding: 3rem 2rem; text-align: center; position: relative; 
-            transition: all 0.3s ease; flex: 1; display: flex; flex-direction: column; 
+
+        .upload-card {
+            background: white; border: 2px dashed #94A3B8; border-radius: 16px;
+            padding: 3rem 2rem; text-align: center; position: relative;
+            transition: all 0.3s ease; flex: 1; display: flex; flex-direction: column;
             justify-content: center; min-height: 280px; box-shadow: var(--shadow-sm);
         }
         .upload-card:hover { border-color: var(--primary); background: #EFF6FF; transform: translateY(-2px); box-shadow: var(--shadow-md); }
         .upload-card.dragover { border-color: var(--primary); background: #DBEAFE; transform: scale(1.02); }
         .upload-card input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 10; }
         .upload-card .icon { font-size: 3.5rem; margin-bottom: 1rem; color: var(--primary); }
-        
-        .result-card { 
-            background: white; border-radius: 16px; 
-            box-shadow: var(--shadow-lg); overflow: hidden; 
-            width: 100%; max-width: 550px; border: 1px solid #E2E8F0; 
+
+        .result-card {
+            background: white; border-radius: 16px;
+            box-shadow: var(--shadow-lg); overflow: hidden;
+            width: 100%; max-width: 550px; border: 1px solid #E2E8F0;
             display: none; transition: all 0.3s ease;
         }
         .result-header { background: white; padding: 1.2rem 1.5rem; border-bottom: 1px solid #E2E8F0; font-weight: 700; display: flex; justify-content: space-between; align-items: center;}
-        .result-image-container { 
-            width: 100%; background: repeating-conic-gradient(#f8fafc 0% 25%, #f1f5f9 0% 50%) 50% / 20px 20px; 
+        .result-image-container {
+            width: 100%; background: repeating-conic-gradient(#f8fafc 0% 25%, #f1f5f9 0% 50%) 50% / 20px 20px;
             border-bottom: 1px solid #E2E8F0;
         }
         .result-image { width: 100%; height: auto; display: block; max-height: 450px; object-fit: contain; }
-        
+
         .result-actions { padding: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; background: #F8FAFC;}
         .result-actions .full-width { grid-column: span 2; }
 
@@ -359,41 +417,41 @@ HTML_TEMPLATE = """
         .editor-footer { padding: 1.5rem; background: #0F172A; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; border-top: 1px solid #334155;}
 
         @media print {
-            html, body { 
-                background-color: #ffffff !important; 
-                background: none !important; 
-                min-height: 0 !important; 
+            html, body {
+                background-color: #ffffff !important;
+                background: none !important;
+                min-height: 0 !important;
                 margin: 0; padding: 0;
             }
-            header, .main-container, .loader-overlay, .editor-modal { 
-                display: none !important; 
+            header, .main-container, .loader-overlay, .editor-modal {
+                display: none !important;
             }
             #print-area, #print-area * { visibility: visible; }
-            #print-area { 
-                position: relative; 
-                left: 0; top: 0; width: 100%; 
-                display: flex; flex-direction: column; align-items: center; 
-                justify-content: flex-start; 
-                padding-top: 1cm; 
+            #print-area {
+                position: relative;
+                left: 0; top: 0; width: 100%;
+                display: flex; flex-direction: column; align-items: center;
+                justify-content: flex-start;
+                padding-top: 1cm;
             }
-            .print-page { 
-                width: 100%; display: flex; flex-direction: column; align-items: center; 
-                gap: 4cm; 
+            .print-page {
+                width: 100%; display: flex; flex-direction: column; align-items: center;
+                gap: 4cm;
             }
-            .print-page img { 
-                width: 12cm; height: 7.5cm; object-fit: fill; border: 1px solid #ddd; 
+            .print-page img {
+                width: 12cm; height: 7.5cm; object-fit: fill; border: 1px solid #ddd;
             }
             .single-print { gap: 0; }
-            .single-print img { 
-                width: 19cm !important; 
-                height: auto !important; 
-                max-height: 25cm !important; 
-                object-fit: contain !important; 
-                border: none !important; 
+            .single-print img {
+                width: 19cm !important;
+                height: auto !important;
+                max-height: 25cm !important;
+                object-fit: contain !important;
+                border: none !important;
             }
             @page {
                 size: A4 portrait;
-                margin: 0.5cm 1cm; 
+                margin: 0.5cm 1cm;
             }
         }
     </style>
@@ -420,7 +478,7 @@ HTML_TEMPLATE = """
                     <option value="multi">Front + Back ID (Aadhaar, PAN, Voter)</option>
                 </select>
             </div>
-            
+
             <div class="form-group">
                 <label>Document Type</label>
                 <select id="docType"></select>
@@ -429,7 +487,7 @@ HTML_TEMPLATE = """
 
         <!-- Workspace -->
         <div class="workspace">
-            
+
             <div class="empty-state" id="emptyState">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
                 <h2>Ready to Scan</h2>
@@ -439,11 +497,11 @@ HTML_TEMPLATE = """
             <!-- Upload Zones -->
             <div class="upload-zones" id="uploadZones" style="display: none;">
                 <div style="display: flex; gap: 2rem; flex-wrap: wrap; width: 100%; justify-content: center;">
-                    
+
                     <!-- Front Container -->
                     <div style="flex: 1; min-width: 320px; max-width: 500px; display: flex; flex-direction: column; gap: 1rem;">
                         <h3 id="frontTitle" style="text-align: center; color: #475569; font-weight: 700;">DOCUMENT IMAGE</h3>
-                        
+
                         <div class="upload-card" id="frontUpload">
                             <input type="file" accept="image/*" capture="environment" onchange="handleFileInput(event, 'front')">
                             <div class="icon">📄</div>
@@ -464,7 +522,7 @@ HTML_TEMPLATE = """
                                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg> Re-Crop
                                 </button>
                                 <button class="btn full-width" onclick="openEditor('front')">Manual Corner Adjust</button>
-                                
+
                                 <select class="btn" style="text-align: left;" onchange="applyEnhancement('front', this.value)">
                                     <option value="original">Color (Original)</option>
                                     <option value="clean">Color (Enhanced)</option>
@@ -478,7 +536,7 @@ HTML_TEMPLATE = """
                     <!-- Back Container -->
                     <div id="backContainer" style="flex: 1; min-width: 320px; max-width: 500px; display: none; flex-direction: column; gap: 1rem;">
                         <h3 style="text-align: center; color: #475569; font-weight: 700;">BACK SIDE</h3>
-                        
+
                         <div class="upload-card" id="backUpload">
                             <input type="file" accept="image/*" capture="environment" onchange="handleFileInput(event, 'back')">
                             <div class="icon">📄</div>
@@ -499,7 +557,7 @@ HTML_TEMPLATE = """
                                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg> Re-Crop
                                 </button>
                                 <button class="btn full-width" onclick="openEditor('back')">Manual Corner Adjust</button>
-                                
+
                                 <select class="btn" style="text-align: left;" onchange="applyEnhancement('back', this.value)">
                                     <option value="original">Color (Original)</option>
                                     <option value="clean">Color (Enhanced)</option>
@@ -560,7 +618,7 @@ HTML_TEMPLATE = """
             const cat = document.getElementById('docCategory').value;
             const typeSelect = document.getElementById('docType');
             typeSelect.innerHTML = '';
-            
+
             const options = cat === 'single' ? singleTypes : multiTypes;
             options.forEach(opt => {
                 let el = document.createElement('option');
@@ -586,7 +644,7 @@ HTML_TEMPLATE = """
         function checkPrintAll() {
             const cat = document.getElementById('docCategory').value;
             const printBtn = document.getElementById('printAllBtn');
-            
+
             if (cat === 'multi' && state.front.resultBase64 && state.back.resultBase64) {
                 printBtn.style.display = 'block';
                 printBtn.innerHTML = 'PRINT FRONT & BACK';
@@ -604,7 +662,7 @@ HTML_TEMPLATE = """
         }
         function hideLoader() { document.getElementById('loader').style.display = 'none'; }
 
-        // --- NEW: Upload Logic separated so Paste can also use it ---
+        // --- Upload Logic separated so Paste can also use it ---
         async function processFile(file, side) {
             if (!file) return;
 
@@ -615,10 +673,10 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/upload', { method: 'POST', body: formData });
                 const data = await res.json();
-                
+
                 if (data.success) {
                     state[side].originalBase64 = data.original_b64;
-                    state[side].resultBase64 = data.original_b64; 
+                    state[side].resultBase64 = data.original_b64;
                     state[side].width = data.width;
                     state[side].height = data.height;
                     state[side].corners = data.corners;
@@ -647,10 +705,10 @@ HTML_TEMPLATE = """
         function handleFileInput(event, side) {
             const file = event.target.files[0];
             processFile(file, side);
-            event.target.value = ''; 
+            event.target.value = '';
         }
 
-        // --- NEW: Global Paste Event Listener ---
+        // --- Global Paste Event Listener ---
         document.addEventListener('paste', function(e) {
             const clipboardItems = (e.clipboardData || e.originalEvent.clipboardData).items;
             let imageFile = null;
@@ -668,13 +726,10 @@ HTML_TEMPLATE = """
                 const isBackFilled = state.back.originalBase64 !== null;
 
                 if (!isFrontFilled) {
-                    // Paste to Front if empty
                     processFile(imageFile, 'front');
                 } else if (cat === 'multi' && !isBackFilled) {
-                    // Paste to Back if Front is full & Back is empty
                     processFile(imageFile, 'back');
                 } else {
-                    // Both slots are filled (or single mode filled) - Ask user
                     if(confirm("An image is already uploaded. Do you want to replace the FRONT image?")) {
                         processFile(imageFile, 'front');
                     }
@@ -692,7 +747,7 @@ HTML_TEMPLATE = """
                         image: state[side].originalBase64,
                         corners: state[side].corners,
                         mode: state[side].mode,
-                        category: document.getElementById('docCategory').value 
+                        category: document.getElementById('docCategory').value
                     })
                 });
                 const data = await res.json();
@@ -712,7 +767,7 @@ HTML_TEMPLATE = """
 
         async function applyEnhancement(side, mode) {
             state[side].mode = mode;
-            await performCrop(side); 
+            await performCrop(side);
         }
 
         async function rotateImage(side) {
@@ -726,8 +781,8 @@ HTML_TEMPLATE = """
                 const data = await res.json();
                 if (data.success) {
                     state[side].resultBase64 = data.result_b64;
-                    state[side].originalBase64 = data.result_b64; 
-                    
+                    state[side].originalBase64 = data.result_b64;
+
                     let w = state[side].width;
                     let h = state[side].height;
                     state[side].width = h;
@@ -745,7 +800,7 @@ HTML_TEMPLATE = """
         function printAll() {
             const cat = document.getElementById('docCategory').value;
             const printArea = document.getElementById('print-area');
-            
+
             if(cat === 'multi') {
                 printArea.innerHTML = `
                     <div class="print-page">
